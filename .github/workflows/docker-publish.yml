@@ -1,0 +1,70 @@
+name: Publish container image
+
+# Push the Joplin version to build as a tag (e.g. v3.7.21). The image gets the
+# same version, without the "v".
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # The Joplin install compiles the whole monorepo.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # 1. Joplin's source at the release being packaged.
+      - uses: actions/checkout@v7
+        with:
+          repository: laurent22/joplin
+          ref: ${{ github.ref_name }}
+          path: joplin
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # 2. The same steps as Joplin's own deploy to app.joplincloud.com
+      #    (joplin/web-app, deploy-github-pages.yml).
+      - name: Build the web app
+        working-directory: joplin
+        run: |
+          corepack enable
+          yarn install
+          cd packages/app-mobile
+          yarn web
+
+      - name: Copy the build into the image context
+        run: cp -r joplin/packages/app-mobile/web/dist dist
+
+      # 3. Kept for a week, to test a build outside the cluster.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: joplin-web-${{ steps.meta.outputs.version }}
+          path: dist/
+          retention-days: 7
+
+      # 4. Package and publish.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/rodolfonuneslopes/joplin-web:${{ steps.meta.outputs.version }}
